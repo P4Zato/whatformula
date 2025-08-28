@@ -48,6 +48,10 @@ class Mensagem(db.Model):
     media_type = db.Column(db.String(50), nullable=True)
     data_recebimento = db.Column(db.DateTime, default=datetime.utcnow)
 
+# --- CORREÇÃO: Cria as tabelas no contexto da aplicação ---
+with app.app_context():
+    db.create_all()
+
 # --- Credenciais e Variáveis Globais ---
 META_ACCESS_TOKEN = os.getenv("META_ACCESS_TOKEN")
 META_PHONE_NUMBER_ID = os.getenv("META_PHONE_NUMBER_ID")
@@ -198,7 +202,7 @@ def whatsapp_webhook():
                 salvar_no_banco(remetente, nome_final, mensagem_para_painel, media_id, message_type)
                 
                 if adicionar_ao_sorteio(remetente, nome_extraido):
-                    enviar_resposta_whatsapp(remetente, "Obrigado por sua mensagem! Você já está participando do nosso sorteio semanal. Boa sorte!  ")
+                    enviar_resposta_whatsapp(remetente, "Obrigado por sua mensagem! Você já está participando do nosso sorteio semanal. Boa sorte! 🤞")
                 
                 threading.Thread(target=tarefa_limpeza_banco).start()
 
@@ -556,12 +560,11 @@ document.addEventListener('DOMContentLoaded', () => {
 def home():
     return render_template_string(HTML_TEMPLATE)
 
+# O if __name__ == '__main__' é útil para testes locais, mas não é executado no Render.
+# A criação das tabelas foi movida para o escopo global para garantir a execução.
 if __name__ == '__main__':
-    with app.app_context():
-        db.create_all()
     print("===================================================")
     print("🚀 Servidor do Painel v6 (Modo Meta API + DB) iniciado!")
     print("Acesse o painel em: http://127.0.0.1:5000")
     print("===================================================")
     app.run(host='0.0.0.0', port=5000, debug=False)
- 
