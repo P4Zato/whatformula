@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 # =============================================================================
-# APLICAÇÃO COMPLETA v7.1: SETUP MANUAL DO BANCO DE DADOS
+# APLICAÇÃO COMPLETA v8: CORREÇÕES DE FUSO HORÁRIO, DB E DISPAROS
 # =============================================================================
 
 import os
@@ -36,7 +36,7 @@ class Cadastro(db.Model):
     __tablename__ = 'cadastros'
     id = db.Column(db.Integer, primary_key=True)
     telefone = db.Column(db.String(30), unique=True, nullable=False)
-    data_criacao = db.Column(db.DateTime, default=datetime.utcnow)
+    data_criacao = db.Column(db.DateTime, default=lambda: datetime.utcnow() - timedelta(hours=3))
 
 class Mensagem(db.Model):
     __tablename__ = 'mensagens'
@@ -46,7 +46,18 @@ class Mensagem(db.Model):
     texto = db.Column(db.Text, nullable=False)
     media_id = db.Column(db.String(255), nullable=True)
     media_type = db.Column(db.String(50), nullable=True)
-    data_recebimento = db.Column(db.DateTime, default=datetime.utcnow)
+    data_recebimento = db.Column(db.DateTime, default=lambda: datetime.utcnow() - timedelta(hours=3))
+
+class Reclamacao(db.Model):
+    __tablename__ = 'reclamacoes'
+    id = db.Column(db.Integer, primary_key=True)
+    nome = db.Column(db.String(100), nullable=True)
+    telefone = db.Column(db.String(30), nullable=False)
+    texto = db.Column(db.Text, nullable=False)
+    status = db.Column(db.String(50), default='Registrada')
+    media_id = db.Column(db.String(255), nullable=True)
+    media_type = db.Column(db.String(50), nullable=True)
+    timestamp = db.Column(db.DateTime, default=lambda: datetime.utcnow() - timedelta(hours=3))
 
 # --- Credenciais e Variáveis Globais ---
 META_ACCESS_TOKEN = os.getenv("META_ACCESS_TOKEN")
@@ -54,8 +65,6 @@ META_PHONE_NUMBER_ID = os.getenv("META_PHONE_NUMBER_ID")
 META_VERIFY_TOKEN = os.getenv("META_VERIFY_TOKEN")
 
 db_participantes_sorteio = {}
-db_reclamacoes = []
-reclamacao_id_counter = 1
 disparo_status = {"ativo": False, "progresso": 0, "total": 0, "log": []}
 
 # --- Lógica Principal ---
@@ -106,8 +115,10 @@ def enviar_resposta_whatsapp(destinatario, mensagem):
         print(f"Mensagem enviada para {destinatario}. Status: {response.status_code}")
         return True
     except requests.exceptions.RequestException as e:
-        print(f"ERRO ao enviar mensagem para {destinatario}: {e}")
-        disparo_status["log"].append(f"ERRO ao enviar para {destinatario}: {e.response.text if e.response else 'Sem resposta'}")
+        error_info = e.response.json() if e.response else {"error": "Sem resposta"}
+        error_message = error_info.get('error', {}).get('message', str(e))
+        print(f"ERRO ao enviar mensagem para {destinatario}: {error_message}")
+        disparo_status["log"].append(f"ERRO ao enviar para ...{destinatario[-4:]}: {error_message}")
         return False
 
 def tarefa_disparo_massa(mensagens):
@@ -120,6 +131,8 @@ def tarefa_disparo_massa(mensagens):
         disparo_status["total"] = len(numeros)
         disparo_status["progresso"] = 0
         disparo_status["log"] = [f"Iniciando disparos para {len(numeros)} contatos..."]
+        
+        limite_24h = datetime.utcnow() - timedelta(hours=24)
 
         for i in range(0, len(numeros), 5):
             if not disparo_status["ativo"]:
@@ -128,6 +141,13 @@ def tarefa_disparo_massa(mensagens):
             
             lote = numeros[i:i+5]
             for numero in lote:
+                # Verifica se o usuário interagiu nas últimas 24 horas
+                interacao_recente = Mensagem.query.filter(Mensagem.telefone == numero, Mensagem.data_recebimento > limite_24h).first()
+                if not interacao_recente:
+                    disparo_status["log"].append(f"...{numero[-4:]} ignorado (fora da janela de 24h)")
+                    disparo_status["progresso"] += 1
+                    continue
+
                 mensagem_aleatoria = random.choice(mensagens)
                 if enviar_resposta_whatsapp(numero, mensagem_aleatoria):
                     disparo_status["log"].append(f"Sucesso no envio para ...{numero[-4:]}")
@@ -205,17 +225,12 @@ def whatsapp_webhook():
             print(f"Formato de notificação não esperado: {e}")
         return "OK", 200
 
-# --- ENDPOINT DE SETUP MANUAL DO BANCO DE DADOS ---
 @app.route('/setup-db')
 def setup_db():
     with app.app_context():
         try:
-            inspector = inspect(db.engine)
-            if not inspector.has_table('cadastros') or not inspector.has_table('mensagens'):
-                db.create_all()
-                return "<h1>Sucesso!</h1><p>As tabelas 'cadastros' e 'mensagens' foram criadas no banco de dados. Você já pode fechar esta página.</p>"
-            else:
-                return "<h1>Aviso</h1><p>As tabelas já existem no banco de dados. Nenhuma ação foi tomada.</p>"
+            db.create_all()
+            return "<h1>Sucesso!</h1><p>As tabelas foram criadas/verificadas no banco de dados. Você já pode fechar esta página.</p>"
         except Exception as e:
             return f"<h1>Erro</h1><p>Ocorreu um erro ao criar as tabelas: {e}</p>", 500
 
@@ -255,7 +270,7 @@ def get_mensagens():
             end_date = datetime.strptime(end_date_str, '%Y-%m-%d') + timedelta(days=1)
             query = query.filter(Mensagem.data_recebimento.between(start_date, end_date))
         except ValueError:
-            pass # Ignora datas inválidas e usa o padrão
+            pass
     else:
         three_days_ago = datetime.utcnow() - timedelta(days=3)
         query = query.filter(Mensagem.data_recebimento >= three_days_ago)
@@ -282,26 +297,22 @@ def get_stats():
 
 @app.route('/promover_reclamacao', methods=['POST'])
 def promover_reclamacao():
-    global reclamacao_id_counter
     data = request.json
     mensagem_id = data.get('id')
     
-    mensagem_a_promover = Mensagem.query.get(mensagem_id)
-    if mensagem_a_promover:
-        nova_reclamacao = {
-            "id": reclamacao_id_counter, "nome": mensagem_a_promover.nome,
-            "telefone": mensagem_a_promover.telefone, "texto": mensagem_a_promover.texto,
-            "status": "Registrada", "media_id": mensagem_a_promover.media_id,
-            "media_type": mensagem_a_promover.media_type,
-            "timestamp": datetime.now().isoformat()
-        }
-        db_reclamacoes.append(nova_reclamacao)
-        reclamacao_id_counter += 1
-        
-        db.session.delete(mensagem_a_promover)
-        db.session.commit()
-        return jsonify({"status": "success"})
-    return jsonify({"status": "error", "message": "Mensagem não encontrada no banco de dados"}), 404
+    with app.app_context():
+        mensagem_a_promover = Mensagem.query.get(mensagem_id)
+        if mensagem_a_promover:
+            nova_reclamacao = Reclamacao(
+                nome=mensagem_a_promover.nome, telefone=mensagem_a_promover.telefone,
+                texto=mensagem_a_promover.texto, media_id=mensagem_a_promover.media_id,
+                media_type=mensagem_a_promover.media_type
+            )
+            db.session.add(nova_reclamacao)
+            db.session.delete(mensagem_a_promover)
+            db.session.commit()
+            return jsonify({"status": "success"})
+    return jsonify({"status": "error", "message": "Mensagem não encontrada"}), 404
 
 @app.route('/media/<media_id>')
 def get_media(media_id):
@@ -323,20 +334,28 @@ def get_media(media_id):
 def get_participantes(): return jsonify(list(db_participantes_sorteio.values()))
 
 @app.route('/reclamacoes', methods=['GET'])
-def get_reclamacoes(): return jsonify(db_reclamacoes)
+def get_reclamacoes():
+    reclamacoes_db = Reclamacao.query.order_by(Reclamacao.timestamp.desc()).all()
+    return jsonify([{
+        "id": r.id, "nome": r.nome, "telefone": r.telefone, "texto": r.texto,
+        "status": r.status, "media_id": r.media_id, "media_type": r.media_type,
+        "timestamp": r.timestamp.isoformat()
+    } for r in reclamacoes_db])
 
 @app.route('/reclamacoes/<int:id>/status', methods=['POST'])
 def update_reclamacao_status(id):
-    reclamacao = next((r for r in db_reclamacoes if r['id'] == id), None)
-    if reclamacao:
-        reclamacao['status'] = request.json.get('status')
-        return jsonify(reclamacao)
+    with app.app_context():
+        reclamacao = Reclamacao.query.get(id)
+        if reclamacao:
+            reclamacao.status = request.json.get('status')
+            db.session.commit()
+            return jsonify({"status": "success"})
     return jsonify({'status': "error", 'message': 'Reclamação não encontrada'}), 404
 
 # --- Interface Visual (Painel HTML) ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
-<html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Painel de Controle v7</title><script src="https://cdn.tailwindcss.com"></script><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet"><style>body { font-family: 'Inter', sans-serif; } .log-box { background-color: #1e293b; color: #e2e8f0; font-family: monospace; font-size: 0.8rem; padding: 10px; border-radius: 5px; height: 150px; overflow-y: auto; } .log-box p { margin: 0; padding: 2px 0; border-bottom: 1px solid #334155; } </style></head><body class="bg-slate-100 text-slate-800">
+<html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Painel de Controle v8</title><script src="https://cdn.tailwindcss.com"></script><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet"><style>body { font-family: 'Inter', sans-serif; } .log-box { background-color: #1e293b; color: #e2e8f0; font-family: monospace; font-size: 0.8rem; padding: 10px; border-radius: 5px; height: 150px; overflow-y: auto; } .log-box p { margin: 0; padding: 2px 0; border-bottom: 1px solid #334155; } </style></head><body class="bg-slate-100 text-slate-800">
 <div class="container mx-auto p-4 md:p-8"><header class="text-center mb-8"><h1 class="text-4xl font-bold text-slate-900">Painel de Controle Ao Vivo</h1><p class="text-slate-600 mt-2">Gerenciamento de Sorteios, Reclamações e Disparos via WhatsApp</p></header>
 <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
     <!-- COLUNA 1 -->
@@ -496,7 +515,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (filteredReclamacoes.length === 0) {
             complaintsList.innerHTML = '<p class="text-slate-400 text-center">Nenhuma reclamação com os filtros.</p>'; return;
         }
-        filteredReclamacoes.sort((a, b) => b.id - a.id);
+        filteredReclamacoes.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
         filteredReclamacoes.forEach(r => {
             const statusColors = { 'Registrada': 'bg-yellow-100', 'Em Análise': 'bg-blue-100', 'Solucionada': 'bg-green-100', 'Sem Solução': 'bg-red-100' };
             const card = document.createElement('div');
@@ -531,8 +550,24 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function realizarSorteio() { /* ... (código inalterado) ... */ }
-    async function updateStatus(id, newStatus) { /* ... (código inalterado) ... */ }
-    function addStatusChangeListeners() { /* ... (código inalterado) ... */ }
+    
+    async function updateStatus(id, newStatus) {
+        try {
+            await fetch(`${API_URL}/reclamacoes/${id}/status`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: newStatus }) });
+            const reclamacao = reclamacoesCache.find(r => r.id === id);
+            if (reclamacao) reclamacao.status = newStatus;
+            renderizarReclamacoes();
+            atualizarPlacar(reclamacoesCache);
+        } catch (error) { console.error("Erro ao atualizar status:", error); }
+    }
+
+    function addStatusChangeListeners() {
+        document.querySelectorAll('.status-select').forEach(select => {
+            select.addEventListener('change', (event) => {
+                updateStatus(parseInt(event.target.dataset.id), event.target.value);
+            });
+        });
+    }
 
     // Event Listeners
     startDisparoBtn.addEventListener('click', async () => {
