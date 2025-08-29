@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 # =============================================================================
-# APLICAÇÃO COMPLETA v7: MÉTRICAS DO BANCO DE DADOS E BUSCA AVANÇADA
+# APLICAÇÃO COMPLETA v7.1: SETUP MANUAL DO BANCO DE DADOS
 # =============================================================================
 
 import os
@@ -47,10 +47,6 @@ class Mensagem(db.Model):
     media_id = db.Column(db.String(255), nullable=True)
     media_type = db.Column(db.String(50), nullable=True)
     data_recebimento = db.Column(db.DateTime, default=datetime.utcnow)
-
-# --- Cria as tabelas se não existirem ---
-with app.app_context():
-    db.create_all()
 
 # --- Credenciais e Variáveis Globais ---
 META_ACCESS_TOKEN = os.getenv("META_ACCESS_TOKEN")
@@ -208,6 +204,20 @@ def whatsapp_webhook():
         except (KeyError, IndexError) as e:
             print(f"Formato de notificação não esperado: {e}")
         return "OK", 200
+
+# --- ENDPOINT DE SETUP MANUAL DO BANCO DE DADOS ---
+@app.route('/setup-db')
+def setup_db():
+    with app.app_context():
+        try:
+            inspector = inspect(db.engine)
+            if not inspector.has_table('cadastros') or not inspector.has_table('mensagens'):
+                db.create_all()
+                return "<h1>Sucesso!</h1><p>As tabelas 'cadastros' e 'mensagens' foram criadas no banco de dados. Você já pode fechar esta página.</p>"
+            else:
+                return "<h1>Aviso</h1><p>As tabelas já existem no banco de dados. Nenhuma ação foi tomada.</p>"
+        except Exception as e:
+            return f"<h1>Erro</h1><p>Ocorreu um erro ao criar as tabelas: {e}</p>", 500
 
 @app.route('/iniciar_disparo', methods=['POST'])
 def iniciar_disparo():
