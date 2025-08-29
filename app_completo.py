@@ -110,10 +110,15 @@ def enviar_resposta_whatsapp(destinatario, mensagem):
     headers = {"Authorization": f"Bearer {META_ACCESS_TOKEN}", "Content-Type": "application/json"}
     data = {"messaging_product": "whatsapp", "to": destinatario, "text": {"body": mensagem}}
     try:
-        response = requests.post(url, headers=headers, data=json.dumps(data))
+        # Adicionado timeout de 15 segundos para evitar que a aplicação fique presa indefinidamente
+        response = requests.post(url, headers=headers, data=json.dumps(data), timeout=15)
         response.raise_for_status()
         print(f"Mensagem enviada para {destinatario}. Status: {response.status_code}")
         return True
+    except requests.exceptions.Timeout:
+        print(f"ERRO: Timeout ao enviar mensagem para {destinatario}")
+        disparo_status["log"].append(f"ERRO: Timeout (15s) para ...{destinatario[-4:]}")
+        return False
     except requests.exceptions.RequestException as e:
         error_info = e.response.json() if e.response else {"error": "Sem resposta"}
         error_message = error_info.get('error', {}).get('message', str(e))
@@ -132,36 +137,71 @@ def tarefa_disparo_massa(mensagens):
         disparo_status["progresso"] = 0
         disparo_status["log"] = [f"Iniciando disparos para {len(numeros)} contatos..."]
         
-        limite_24h = datetime.utcnow() - timedelta(hours=24)
+        if not numeros:
+            disparo_status["log"].append("Nenhum contato cadastrado para enviar.")
+            disparo_status["ativo"] = False
+            return
 
+        limite_24h = datetime.utcnow() - timedelta(hours=24)
+        
+        # O loop a seguir processa a lista de 'numeros' em lotes (batches).
+        # 'range(0, len(numeros), 5)' cria uma sequência como 0, 5, 10, ...
+        # A cada iteração, 'lote = numeros[i:i+5]' pega um pedaço da lista.
+        # Se a lista não for um múltiplo de 5, o último lote terá menos de 5 números.
+        # Por exemplo, com 23 números, os lotes terão 5, 5, 5, 5 e finalmente 3 números.
+        # A lógica funciona corretamente para qualquer quantidade de números.
         for i in range(0, len(numeros), 5):
             if not disparo_status["ativo"]:
                 disparo_status["log"].append("Campanha interrompida pelo usuário.")
                 break
             
-            lote = numeros[i:i+5]
-            for numero in lote:
+            lote_atual = numeros[i:i+5]
+            num_lote = (i // 5) + 1
+            total_lotes = (len(numeros) + 4) // 5
+            disparo_status["log"].append(f"--- Processando Lote {num_lote}/{total_lotes} ({len(lote_atual)} contatos) ---")
+
+            for numero in lote_atual:
+                if not disparo_status["ativo"]: break # Checa de novo caso o usuário pare no meio de um lote
+
+                # IMPORTANTE: Regra da Meta/WhatsApp
+                # Só é permitido enviar mensagens de formato livre para usuários que
+                # interagiram nas últimas 24 horas. Caso contrário, o envio falhará.
                 interacao_recente = Mensagem.query.filter(Mensagem.telefone == numero, Mensagem.data_recebimento > limite_24h).first()
+                
                 if not interacao_recente:
-                    disparo_status["log"].append(f"...{numero[-4:]} ignorado (fora da janela de 24h)")
+                    disparo_status["log"].append(f"Ignorado ...{numero[-4:]} (sem interação em 24h)")
                     disparo_status["progresso"] += 1
+                    # Pula para o próximo número sem enviar
                     continue
 
                 mensagem_aleatoria = random.choice(mensagens)
+                disparo_status["log"].append(f"Tentando enviar para ...{numero[-4:]}")
                 if enviar_resposta_whatsapp(numero, mensagem_aleatoria):
-                    disparo_status["log"].append(f"Sucesso no envio para ...{numero[-4:]}")
+                    disparo_status["log"].append(f"-> Sucesso para ...{numero[-4:]}")
                 else:
-                    disparo_status["log"].append(f"Falha no envio para ...{numero[-4:]}")
+                    disparo_status["log"].append(f"-> Falha para ...{numero[-4:]}")
+                
                 disparo_status["progresso"] += 1
-                time.sleep(random.randint(2, 5))
+                time.sleep(random.randint(2, 5)) # Pausa curta entre cada número
             
-            if i + 5 < len(numeros):
-                intervalo = random.randint(180, 600)
-                disparo_status["log"].append(f"Pausa de {intervalo//60} minutos antes do próximo lote.")
-                time.sleep(intervalo)
+            # Pausa longa entre os lotes, mas não após o último
+            if i + 5 < len(numeros) and disparo_status["ativo"]:
+                intervalo = random.randint(180, 600) # 3 a 10 minutos
+                disparo_status["log"].append(f"Pausa de {intervalo//60} min e {intervalo%60}s antes do próximo lote.")
+                
+                # Faz a pausa em pequenos incrementos para que a parada seja mais responsiva
+                for _ in range(intervalo):
+                    if not disparo_status["ativo"]:
+                        disparo_status["log"].append("Pausa interrompida.")
+                        break
+                    time.sleep(1)
+                
+                if not disparo_status["ativo"]:
+                    break # Sai do loop principal se foi interrompido durante a pausa
     
-    disparo_status["log"].append("Campanha finalizada.")
+    disparo_status["log"].append("--- Campanha Finalizada ---")
     disparo_status["ativo"] = False
+
 
 def tarefa_limpeza_banco():
     with app.app_context():
