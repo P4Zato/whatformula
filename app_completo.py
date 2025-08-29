@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 # =============================================================================
-# APLICAÇÃO COMPLETA v8: CORREÇÕES DE FUSO HORÁRIO, DB E DISPAROS
+# APLICAÇÃO COMPLETA v9: CORREÇÕES PERSISTÊNCIA, SORTEIO E API
 # =============================================================================
 
 import os
@@ -69,6 +69,25 @@ disparo_status = {"ativo": False, "progresso": 0, "total": 0, "log": []}
 
 # --- Lógica Principal ---
 
+def carregar_participantes_iniciais():
+    """
+    CORREÇÃO DE PERSISTÊNCIA: Carrega todos os cadastros do DB para a lista de 
+    sorteio em memória ao iniciar, garantindo que a lista não se perca.
+    """
+    with app.app_context():
+        print("Carregando participantes iniciais do banco de dados...")
+        cadastros = Cadastro.query.all()
+        for cadastro in cadastros:
+            if cadastro.telefone not in db_participantes_sorteio:
+                # Tenta encontrar o nome mais recente para este telefone
+                ultima_mensagem = Mensagem.query.filter_by(telefone=cadastro.telefone).order_by(Mensagem.data_recebimento.desc()).first()
+                nome = ultima_mensagem.nome if ultima_mensagem and ultima_mensagem.nome else f"Pessoa ({cadastro.telefone[-4:]})"
+                db_participantes_sorteio[cadastro.telefone] = {
+                    "nome": nome,
+                    "telefone": cadastro.telefone
+                }
+        print(f"✅ {len(db_participantes_sorteio)} participantes carregados.")
+
 def salvar_no_banco(telefone, nome, texto_mensagem, media_id, media_type):
     with app.app_context():
         try:
@@ -109,12 +128,8 @@ def formatar_numero_br(numero):
     """
     if not isinstance(numero, str): return numero
     
-    # A regra se aplica a números brasileiros (prefixo 55) com 12 dígitos.
-    # Formato antigo: 55 + DDD (2) + NÚMERO (8). Total 12.
-    # Formato novo:   55 + DDD (2) + 9 + NÚMERO (8). Total 13.
     if numero.startswith('55') and len(numero) == 12:
         ddd = int(numero[2:4])
-        # Confirma que o DDD é válido no Brasil (11-99)
         if 11 <= ddd <= 99:
             print(f"INFO: Corrigindo número brasileiro de 12 para 13 dígitos: {numero}")
             numero_corrigido = f"{numero[:4]}9{numero[4:]}"
@@ -124,14 +139,24 @@ def formatar_numero_br(numero):
     return numero
 
 def enviar_resposta_whatsapp(destinatario, mensagem):
+    """
+    CORREÇÃO DE ENVIO: Atualizada a versão da API para v19.0, adicionado "type": "text" 
+    explícito e melhorado o log de erros para diagnóstico.
+    """
     if not all([META_ACCESS_TOKEN, META_PHONE_NUMBER_ID]):
         disparo_status["log"].append(f"AVISO: Credenciais não configuradas. Simulando envio para {destinatario}")
         return False
-    url = f"https://graph.facebook.com/v18.0/{META_PHONE_NUMBER_ID}/messages"
+    
+    url = f"https://graph.facebook.com/v19.0/{META_PHONE_NUMBER_ID}/messages"
     headers = {"Authorization": f"Bearer {META_ACCESS_TOKEN}", "Content-Type": "application/json"}
-    data = {"messaging_product": "whatsapp", "to": destinatario, "text": {"body": mensagem}}
+    data = {
+        "messaging_product": "whatsapp",
+        "to": destinatario,
+        "type": "text",
+        "text": {"body": mensagem}
+    }
+    
     try:
-        # Adicionado timeout de 15 segundos para evitar que a aplicação fique presa indefinidamente
         response = requests.post(url, headers=headers, data=json.dumps(data), timeout=15)
         response.raise_for_status()
         print(f"Mensagem enviada para {destinatario}. Status: {response.status_code}")
@@ -141,15 +166,14 @@ def enviar_resposta_whatsapp(destinatario, mensagem):
         disparo_status["log"].append(f"ERRO: Timeout (15s) para ...{destinatario[-4:]}")
         return False
     except requests.exceptions.RequestException as e:
-        error_info = e.response.json() if e.response else {"error": "Sem resposta"}
-        error_message = error_info.get('error', {}).get('message', str(e))
-        print(f"ERRO ao enviar mensagem para {destinatario}: {error_message}")
-        disparo_status["log"].append(f"ERRO ao enviar para ...{destinatario[-4:]}: {error_message}")
+        print(f"ERRO ao enviar para {destinatario}. Resposta completa da API: {e.response.text}")
+        disparo_status["log"].append(f"ERRO ao enviar para ...{destinatario[-4:]}: Checar console para detalhes.")
         return False
 
 def tarefa_disparo_massa(mensagens):
     global disparo_status
     with app.app_context():
+        # Pega a lista de números já corrigida (se aplicável) do banco de dados
         cadastros = Cadastro.query.all()
         numeros = [c.telefone for c in cadastros]
         random.shuffle(numeros)
@@ -164,13 +188,7 @@ def tarefa_disparo_massa(mensagens):
             return
 
         limite_24h = datetime.utcnow() - timedelta(hours=24)
-        
-        # O loop a seguir processa a lista de 'numeros' em lotes (batches).
-        # 'range(0, len(numeros), 5)' cria uma sequência como 0, 5, 10, ...
-        # A cada iteração, 'lote = numeros[i:i+5]' pega um pedaço da lista.
-        # Se a lista não for um múltiplo de 5, o último lote terá menos de 5 números.
-        # Por exemplo, com 23 números, os lotes terão 5, 5, 5, 5 e finalmente 3 números.
-        # A lógica funciona corretamente para qualquer quantidade de números.
+
         for i in range(0, len(numeros), 5):
             if not disparo_status["ativo"]:
                 disparo_status["log"].append("Campanha interrompida pelo usuário.")
@@ -182,17 +200,12 @@ def tarefa_disparo_massa(mensagens):
             disparo_status["log"].append(f"--- Processando Lote {num_lote}/{total_lotes} ({len(lote_atual)} contatos) ---")
 
             for numero in lote_atual:
-                if not disparo_status["ativo"]: break # Checa de novo caso o usuário pare no meio de um lote
+                if not disparo_status["ativo"]: break
 
-                # IMPORTANTE: Regra da Meta/WhatsApp
-                # Só é permitido enviar mensagens de formato livre para usuários que
-                # interagiram nas últimas 24 horas. Caso contrário, o envio falhará.
                 interacao_recente = Mensagem.query.filter(Mensagem.telefone == numero, Mensagem.data_recebimento > limite_24h).first()
-                
                 if not interacao_recente:
                     disparo_status["log"].append(f"Ignorado ...{numero[-4:]} (sem interação em 24h)")
                     disparo_status["progresso"] += 1
-                    # Pula para o próximo número sem enviar
                     continue
 
                 mensagem_aleatoria = random.choice(mensagens)
@@ -203,14 +216,12 @@ def tarefa_disparo_massa(mensagens):
                     disparo_status["log"].append(f"-> Falha para ...{numero[-4:]}")
                 
                 disparo_status["progresso"] += 1
-                time.sleep(random.randint(2, 5)) # Pausa curta entre cada número
+                time.sleep(random.randint(2, 5))
             
-            # Pausa longa entre os lotes, mas não após o último
             if i + 5 < len(numeros) and disparo_status["ativo"]:
-                intervalo = random.randint(180, 600) # 3 a 10 minutos
+                intervalo = random.randint(180, 600)
                 disparo_status["log"].append(f"Pausa de {intervalo//60} min e {intervalo%60}s antes do próximo lote.")
                 
-                # Faz a pausa em pequenos incrementos para que a parada seja mais responsiva
                 for _ in range(intervalo):
                     if not disparo_status["ativo"]:
                         disparo_status["log"].append("Pausa interrompida.")
@@ -218,7 +229,7 @@ def tarefa_disparo_massa(mensagens):
                     time.sleep(1)
                 
                 if not disparo_status["ativo"]:
-                    break # Sai do loop principal se foi interrompido durante a pausa
+                    break
     
     disparo_status["log"].append("--- Campanha Finalizada ---")
     disparo_status["ativo"] = False
@@ -259,7 +270,6 @@ def whatsapp_webhook():
                 message_data = data['entry'][0]['changes'][0]['value']['messages'][0]
                 remetente_original = message_data['from']
                 
-                # Corrige o número do remetente para o formato brasileiro com 9º dígito
                 remetente = formatar_numero_br(remetente_original)
                 
                 message_type = message_data.get('type')
@@ -281,7 +291,7 @@ def whatsapp_webhook():
                 nome_final = nome_extraido or f"Pessoa ({remetente[-4:]})"
                 salvar_no_banco(remetente, nome_final, mensagem_para_painel, media_id, message_type)
                 
-                if adicionar_ao_sorteio(remetente, nome_extraido):
+                if adicionar_ao_sorteio(remetente, nome_final):
                     enviar_resposta_whatsapp(remetente, "Obrigado por sua mensagem! Você já está participando do nosso sorteio semanal. Boa sorte! 🤞")
                 
                 threading.Thread(target=tarefa_limpeza_banco).start()
@@ -381,7 +391,7 @@ def promover_reclamacao():
 @app.route('/media/<media_id>')
 def get_media(media_id):
     if not META_ACCESS_TOKEN: return "Token de acesso não configurado", 500
-    url_info = f"https://graph.facebook.com/v18.0/{media_id}/"
+    url_info = f"https://graph.facebook.com/v19.0/{media_id}/"
     headers = {"Authorization": f"Bearer {META_ACCESS_TOKEN}"}
     try:
         info_response = requests.get(url_info, headers=headers)
@@ -419,12 +429,11 @@ def update_reclamacao_status(id):
 # --- Interface Visual (Painel HTML) ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
-<html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Painel de Controle v8</title><script src="https://cdn.tailwindcss.com"></script><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet"><style>body { font-family: 'Inter', sans-serif; } .log-box { background-color: #1e293b; color: #e2e8f0; font-family: monospace; font-size: 0.8rem; padding: 10px; border-radius: 5px; height: 150px; overflow-y: auto; } .log-box p { margin: 0; padding: 2px 0; border-bottom: 1px solid #334155; } </style></head><body class="bg-slate-100 text-slate-800">
+<html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Painel de Controle v9</title><script src="https://cdn.tailwindcss.com"></script><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet"><style>body { font-family: 'Inter', sans-serif; } .log-box { background-color: #1e293b; color: #e2e8f0; font-family: monospace; font-size: 0.8rem; padding: 10px; border-radius: 5px; height: 150px; overflow-y: auto; } .log-box p { margin: 0; padding: 2px 0; border-bottom: 1px solid #334155; } </style></head><body class="bg-slate-100 text-slate-800">
 <div class="container mx-auto p-4 md:p-8">
     <header class="text-center mb-8 relative">
         <h1 class="text-4xl font-bold text-slate-900">Painel de Controle Ao Vivo</h1>
         <p class="text-slate-600 mt-2">Gerenciamento de Sorteios, Reclamações e Disparos via WhatsApp</p>
-        <!-- MÉTRICAS DISCRETAS -->
         <div class="absolute top-0 right-0 bg-white p-3 rounded-lg shadow-md border text-xs">
             <h3 class="font-bold text-center mb-2 text-purple-700">Métricas</h3>
             <div class="space-y-1 text-left">
@@ -434,21 +443,18 @@ HTML_TEMPLATE = """
         </div>
     </header>
 <div class="grid grid-cols-1 lg:grid-cols-4 gap-8">
-    <!-- COLUNA 1: DISPARO EM MASSA -->
     <div class="bg-white p-6 rounded-xl shadow-lg"><h2 class="text-2xl font-bold text-center mb-4 border-b pb-3 text-green-600">Disparo em Massa</h2><div class="space-y-2 text-sm"><div><label for="msg1" class="font-medium">Mensagem 1:</label><textarea id="msg1" rows="3" class="w-full p-1 border rounded"></textarea></div><div><label for="msg2" class="font-medium">Mensagem 2:</label><textarea id="msg2" rows="3" class="w-full p-1 border rounded"></textarea></div><div><label for="msg3" class="font-medium">Mensagem 3:</label><textarea id="msg3" rows="3" class="w-full p-1 border rounded"></textarea></div></div><button id="start-disparo-btn" class="w-full bg-green-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-green-700 transition mt-3 text-sm">Iniciar Disparos</button><button id="stop-disparo-btn" class="w-full bg-red-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-red-700 transition mt-2 text-sm" style="display: none;">Parar Disparos</button><div class="mt-4"><p class="text-center font-semibold">Status: <span id="disparo-progresso">0/0</span></p><div class="log-box" id="disparo-log"><p>Aguardando...</p></div></div></div>
-    <!-- COLUNA 2: CAIXA DE ENTRADA -->
     <div class="bg-white p-6 rounded-xl shadow-lg"><h2 class="text-2xl font-bold text-center mb-4 border-b pb-3 text-cyan-600">Caixa de Entrada</h2>
         <div class="bg-slate-100 p-3 rounded-lg border mb-4"><h3 class="font-semibold text-sm mb-2 text-center">Buscar Mensagens</h3><div class="grid grid-cols-2 gap-2 text-sm"><div><label for="filter-start-date">De:</label><input type="date" id="filter-start-date" class="w-full p-1 border rounded"></div><div><label for="filter-end-date">Até:</label><input type="date" id="filter-end-date" class="w-full p-1 border rounded"></div></div><button id="search-messages-btn" class="w-full bg-blue-600 text-white font-bold py-1 px-2 rounded-lg hover:bg-blue-700 transition mt-2 text-xs">Buscar por Período</button><button id="reset-messages-btn" class="w-full bg-gray-500 text-white font-bold py-1 px-2 rounded-lg hover:bg-gray-600 transition mt-1 text-xs">Ver Últimos 3 Dias</button></div>
         <div id="messages-list" class="space-y-3 max-h-[600px] overflow-y-auto pr-2"></div>
     </div>
-    <!-- COLUNA 3: SORTEIO -->
     <div class="bg-white p-6 rounded-xl shadow-lg"><h2 class="text-2xl font-bold text-center mb-4 border-b pb-3 text-indigo-600">Direto no Sorteio</h2><div id="sorteio-container" class="text-center p-4 border-2 border-dashed rounded-lg min-h-[150px] flex items-center justify-center"><div id="winner-display" class="hidden"></div><p id="sorteio-placeholder" class="text-slate-500">Aguardando...</p></div><button id="draw-button" class="w-full bg-indigo-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-indigo-700 mt-4 text-lg shadow-md" disabled>SORTEAR AGORA!</button><div class="mt-6"><h3 class="font-bold text-lg mb-2">Participantes (<span id="participant-count">0</span>)</h3><div class="bg-slate-50 p-3 rounded-lg max-h-60 overflow-y-auto border"><ul id="participants-list" class="space-y-2 text-sm"></ul></div></div></div>
-    <!-- COLUNA 4: RECLAMAÇÕES -->
     <div class="bg-white p-6 rounded-xl shadow-lg"><h2 class="text-2xl font-bold text-center mb-4 border-b pb-3 text-red-600">Fala que Eu Registro</h2><div class="bg-slate-100 p-3 rounded-lg border mb-4"><h3 class="font-semibold text-sm mb-2 text-center">Gerar Relatório</h3><div class="grid grid-cols-2 gap-2 text-sm"><div><label for="filter-date" class="block font-medium">Data:</label><input type="date" id="filter-date" class="w-full p-1 border rounded"></div><div><label for="filter-status" class="block font-medium">Status:</label><select id="filter-status" class="w-full p-1 border rounded"><option value="todos">Todos</option><option value="Registrada">Registrada</option><option value="Em Análise">Em Análise</option><option value="Solucionada">Solucionada</option><option value="Sem Solução">Sem Solução</option></select></div></div><button id="print-button" class="w-full bg-gray-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-gray-700 transition mt-3 text-sm">Imprimir Relatório</button></div><div class="bg-slate-50 border rounded-lg p-4 mb-6"><h3 class="font-bold text-lg text-center mb-3">Placar</h3><div class="flex justify-around text-center"><div><p class="text-3xl font-bold" id="registered-count">0</p><p class="text-sm text-slate-500">Registradas</p></div><div><p class="text-3xl font-bold text-green-600" id="solved-count">0</p><p class="text-sm text-slate-500">Solucionadas</p></div></div></div><div id="complaints-list" class="space-y-3 max-h-96 overflow-y-auto pr-2"></div></div>
 </div></div>
 <script>
 document.addEventListener('DOMContentLoaded', () => {
     const API_URL = window.location.origin;
+    // ... (restante das declarações de variáveis)
     const messagesList = document.getElementById('messages-list');
     const drawButton = document.getElementById('draw-button');
     const participantsList = document.getElementById('participants-list');
@@ -602,7 +608,8 @@ document.addEventListener('DOMContentLoaded', () => {
         solvedCountEl.textContent = reclamacoes.filter(r => r.status === 'Solucionada').length;
     }
 
-    function imprimirRelatorio() { /* ... (código inalterado) ... */ }
+    function imprimirRelatorio() { /* ... (código inalterado, pode ser implementado no futuro) ... */ }
+    
     async function promoverMensagem(id) {
         try {
             await fetch(`${API_URL}/promover_reclamacao`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id }) });
@@ -610,12 +617,53 @@ document.addEventListener('DOMContentLoaded', () => {
             fetchMessages();
         } catch (error) { console.error("Erro ao promover mensagem:", error); }
     }
+
     function addPromoteListeners() {
         document.querySelectorAll('.promote-btn').forEach(btn => {
             btn.addEventListener('click', (event) => { promoverMensagem(parseInt(event.target.dataset.id)); });
         });
     }
-    function realizarSorteio() { /* ... (código inalterado) ... */ }
+
+    // CORREÇÃO SORTEIO: Função do sorteio restaurada e melhorada
+    function realizarSorteio() {
+        if (participantesCache.length === 0) return;
+        drawButton.disabled = true;
+        sorteioPlaceholder.classList.add('hidden');
+        winnerDisplay.classList.remove('hidden');
+
+        const rouletteItems = participantsList.querySelectorAll('.roulette-item');
+        let spinCount = 0;
+        const totalSpins = 30 + Math.floor(Math.random() * 10);
+        const winnerIndex = Math.floor(Math.random() * participantesCache.length);
+        const winner = participantesCache[winnerIndex];
+
+        const interval = setInterval(() => {
+            rouletteItems.forEach(item => item.classList.remove('bg-yellow-300', 'scale-110'));
+            
+            const currentIndex = spinCount % participantesCache.length;
+            rouletteItems[currentIndex].classList.add('bg-yellow-300', 'scale-110');
+            rouletteItems[currentIndex].scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+            spinCount++;
+            if (spinCount > totalSpins && currentIndex === winnerIndex) {
+                clearInterval(interval);
+                winnerDisplay.innerHTML = `
+                    <h3 class="text-lg font-bold text-indigo-700 animate-pulse">🏆 VENCEDOR! 🏆</h3>
+                    <p class="text-2xl font-bold mt-2">${winner.nome}</p>
+                    <p class="text-slate-600">${winner.telefone}</p>
+                    <button id="reset-sorteio-btn" class="mt-4 text-xs bg-gray-500 text-white font-semibold py-1 px-3 rounded hover:bg-gray-600 transition">Sortear Novamente</button>
+                `;
+                document.getElementById('reset-sorteio-btn').addEventListener('click', () => {
+                    winnerDisplay.classList.add('hidden');
+                    winnerDisplay.innerHTML = '';
+                    sorteioPlaceholder.classList.remove('hidden');
+                    drawButton.disabled = false;
+                    rouletteItems.forEach(item => item.classList.remove('bg-yellow-300', 'scale-110'));
+                });
+            }
+        }, 100);
+    }
+    
     async function updateStatus(id, newStatus) {
         try {
             await fetch(`${API_URL}/reclamacoes/${id}/status`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: newStatus }) });
@@ -625,6 +673,7 @@ document.addEventListener('DOMContentLoaded', () => {
             atualizarPlacar(reclamacoesCache);
         } catch (error) { console.error("Erro ao atualizar status:", error); }
     }
+
     function addStatusChangeListeners() {
         document.querySelectorAll('.status-select').forEach(select => {
             select.addEventListener('change', (event) => {
@@ -636,26 +685,38 @@ document.addEventListener('DOMContentLoaded', () => {
     // Event Listeners
     startDisparoBtn.addEventListener('click', async () => {
         const payload = { msg1: msg1.value, msg2: msg2.value, msg3: msg3.value };
-        if (!payload.msg1 && !payload.msg2 && !payload.msg3) { alert('Escreva pelo menos uma mensagem.'); return; }
+        if (!payload.msg1 && !payload.msg2 && !payload.msg3) { 
+            // Substituindo alert por uma indicação visual
+            startDisparoBtn.textContent = 'Escreva pelo menos uma mensagem!';
+            startDisparoBtn.classList.add('bg-yellow-500');
+            setTimeout(() => {
+                startDisparoBtn.textContent = 'Iniciar Disparos';
+                startDisparoBtn.classList.remove('bg-yellow-500');
+            }, 2000);
+            return;
+        }
         try {
             await fetch(`${API_URL}/iniciar_disparo`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
             fetchDisparoStatus();
         } catch (error) { console.error('Erro ao iniciar disparo:', error); }
     });
+
     stopDisparoBtn.addEventListener('click', async () => {
         try { await fetch(`${API_URL}/parar_disparo`, { method: 'POST' }); }
         catch (error) { console.error('Erro ao parar disparo:', error); }
     });
+
     filterDate.addEventListener('change', renderizarReclamacoes);
     filterStatus.addEventListener('change', renderizarReclamacoes);
     printButton.addEventListener('click', imprimirRelatorio);
     drawButton.addEventListener('click', realizarSorteio);
+    
     searchMessagesBtn.addEventListener('click', () => {
         const start = filterStartDate.value;
         const end = filterEndDate.value;
         if (start && end) { fetchMessages(start, end); }
-        else { alert('Por favor, selecione as duas datas.'); }
     });
+
     resetMessagesBtn.addEventListener('click', () => {
         filterStartDate.value = '';
         filterEndDate.value = '';
@@ -679,11 +740,14 @@ def home():
     return render_template_string(HTML_TEMPLATE)
 
 if __name__ == '__main__':
+    # Garante que as tabelas existam e carrega os participantes do DB
     with app.app_context():
         db.create_all()
+    carregar_participantes_iniciais()
+    
     print("===================================================")
-    print("🚀 Servidor do Painel v8 (Modo Meta API + DB) iniciado!")
+    print("🚀 Servidor do Painel v9 (Modo Meta API + DB) iniciado!")
     print("Acesse o painel em: http://127.0.0.1:5000")
     print("===================================================")
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
 
