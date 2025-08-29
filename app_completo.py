@@ -141,7 +141,6 @@ def tarefa_disparo_massa(mensagens):
             
             lote = numeros[i:i+5]
             for numero in lote:
-                # Verifica se o usuário interagiu nas últimas 24 horas
                 interacao_recente = Mensagem.query.filter(Mensagem.telefone == numero, Mensagem.data_recebimento > limite_24h).first()
                 if not interacao_recente:
                     disparo_status["log"].append(f"...{numero[-4:]} ignorado (fora da janela de 24h)")
@@ -356,28 +355,35 @@ def update_reclamacao_status(id):
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Painel de Controle v8</title><script src="https://cdn.tailwindcss.com"></script><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet"><style>body { font-family: 'Inter', sans-serif; } .log-box { background-color: #1e293b; color: #e2e8f0; font-family: monospace; font-size: 0.8rem; padding: 10px; border-radius: 5px; height: 150px; overflow-y: auto; } .log-box p { margin: 0; padding: 2px 0; border-bottom: 1px solid #334155; } </style></head><body class="bg-slate-100 text-slate-800">
-<div class="container mx-auto p-4 md:p-8"><header class="text-center mb-8"><h1 class="text-4xl font-bold text-slate-900">Painel de Controle Ao Vivo</h1><p class="text-slate-600 mt-2">Gerenciamento de Sorteios, Reclamações e Disparos via WhatsApp</p></header>
-<div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
-    <!-- COLUNA 1 -->
-    <div class="space-y-8">
-        <div class="bg-white p-6 rounded-xl shadow-lg"><h2 class="text-2xl font-bold text-center mb-4 border-b pb-3 text-green-600">Disparo em Massa</h2><div class="space-y-2 text-sm"><div><label for="msg1" class="font-medium">Mensagem 1:</label><textarea id="msg1" rows="3" class="w-full p-1 border rounded"></textarea></div><div><label for="msg2" class="font-medium">Mensagem 2:</label><textarea id="msg2" rows="3" class="w-full p-1 border rounded"></textarea></div><div><label for="msg3" class="font-medium">Mensagem 3:</label><textarea id="msg3" rows="3" class="w-full p-1 border rounded"></textarea></div></div><button id="start-disparo-btn" class="w-full bg-green-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-green-700 transition mt-3 text-sm">Iniciar Disparos</button><button id="stop-disparo-btn" class="w-full bg-red-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-red-700 transition mt-2 text-sm" style="display: none;">Parar Disparos</button><div class="mt-4"><p class="text-center font-semibold">Status: <span id="disparo-progresso">0/0</span></p><div class="log-box" id="disparo-log"><p>Aguardando...</p></div></div></div>
-        <div class="bg-white p-6 rounded-xl shadow-lg"><h2 class="text-2xl font-bold text-center mb-4 border-b pb-3 text-purple-600">Métricas</h2><div class="space-y-4 text-center"><div><p class="text-4xl font-bold text-purple-800" id="stats-total-cadastros">0</p><p class="text-sm text-slate-500">Contatos Cadastrados</p></div><div><p class="text-4xl font-bold text-purple-800" id="stats-db-size">0 MB</p><p class="text-sm text-slate-500">Tamanho do Banco</p></div></div></div>
-    </div>
-    <!-- COLUNA 2 -->
+<div class="container mx-auto p-4 md:p-8">
+    <header class="text-center mb-8 relative">
+        <h1 class="text-4xl font-bold text-slate-900">Painel de Controle Ao Vivo</h1>
+        <p class="text-slate-600 mt-2">Gerenciamento de Sorteios, Reclamações e Disparos via WhatsApp</p>
+        <!-- MÉTRICAS DISCRETAS -->
+        <div class="absolute top-0 right-0 bg-white p-3 rounded-lg shadow-md border text-xs">
+            <h3 class="font-bold text-center mb-2 text-purple-700">Métricas</h3>
+            <div class="space-y-1 text-left">
+                <p><span class="font-semibold">Contatos:</span> <span id="stats-total-cadastros-header">0</span></p>
+                <p><span class="font-semibold">Uso DB:</span> <span id="stats-db-size-header">0 MB</span></p>
+            </div>
+        </div>
+    </header>
+<div class="grid grid-cols-1 lg:grid-cols-4 gap-8">
+    <!-- COLUNA 1: DISPARO EM MASSA -->
+    <div class="bg-white p-6 rounded-xl shadow-lg"><h2 class="text-2xl font-bold text-center mb-4 border-b pb-3 text-green-600">Disparo em Massa</h2><div class="space-y-2 text-sm"><div><label for="msg1" class="font-medium">Mensagem 1:</label><textarea id="msg1" rows="3" class="w-full p-1 border rounded"></textarea></div><div><label for="msg2" class="font-medium">Mensagem 2:</label><textarea id="msg2" rows="3" class="w-full p-1 border rounded"></textarea></div><div><label for="msg3" class="font-medium">Mensagem 3:</label><textarea id="msg3" rows="3" class="w-full p-1 border rounded"></textarea></div></div><button id="start-disparo-btn" class="w-full bg-green-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-green-700 transition mt-3 text-sm">Iniciar Disparos</button><button id="stop-disparo-btn" class="w-full bg-red-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-red-700 transition mt-2 text-sm" style="display: none;">Parar Disparos</button><div class="mt-4"><p class="text-center font-semibold">Status: <span id="disparo-progresso">0/0</span></p><div class="log-box" id="disparo-log"><p>Aguardando...</p></div></div></div>
+    <!-- COLUNA 2: CAIXA DE ENTRADA -->
     <div class="bg-white p-6 rounded-xl shadow-lg"><h2 class="text-2xl font-bold text-center mb-4 border-b pb-3 text-cyan-600">Caixa de Entrada</h2>
         <div class="bg-slate-100 p-3 rounded-lg border mb-4"><h3 class="font-semibold text-sm mb-2 text-center">Buscar Mensagens</h3><div class="grid grid-cols-2 gap-2 text-sm"><div><label for="filter-start-date">De:</label><input type="date" id="filter-start-date" class="w-full p-1 border rounded"></div><div><label for="filter-end-date">Até:</label><input type="date" id="filter-end-date" class="w-full p-1 border rounded"></div></div><button id="search-messages-btn" class="w-full bg-blue-600 text-white font-bold py-1 px-2 rounded-lg hover:bg-blue-700 transition mt-2 text-xs">Buscar por Período</button><button id="reset-messages-btn" class="w-full bg-gray-500 text-white font-bold py-1 px-2 rounded-lg hover:bg-gray-600 transition mt-1 text-xs">Ver Últimos 3 Dias</button></div>
         <div id="messages-list" class="space-y-3 max-h-[600px] overflow-y-auto pr-2"></div>
     </div>
-    <!-- COLUNA 3 -->
-    <div class="space-y-8">
-        <div class="bg-white p-6 rounded-xl shadow-lg"><h2 class="text-2xl font-bold text-center mb-4 border-b pb-3 text-indigo-600">Direto no Sorteio</h2><div id="sorteio-container" class="text-center p-4 border-2 border-dashed rounded-lg min-h-[150px] flex items-center justify-center"><div id="winner-display" class="hidden"></div><p id="sorteio-placeholder" class="text-slate-500">Aguardando...</p></div><button id="draw-button" class="w-full bg-indigo-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-indigo-700 mt-4 text-lg shadow-md" disabled>SORTEAR AGORA!</button><div class="mt-6"><h3 class="font-bold text-lg mb-2">Participantes (<span id="participant-count">0</span>)</h3><div class="bg-slate-50 p-3 rounded-lg max-h-60 overflow-y-auto border"><ul id="participants-list" class="space-y-2 text-sm"></ul></div></div></div>
-        <div class="bg-white p-6 rounded-xl shadow-lg"><h2 class="text-2xl font-bold text-center mb-4 border-b pb-3 text-red-600">Fala que Eu Registro</h2><div class="bg-slate-100 p-3 rounded-lg border mb-4"><h3 class="font-semibold text-sm mb-2 text-center">Gerar Relatório</h3><div class="grid grid-cols-2 gap-2 text-sm"><div><label for="filter-date" class="block font-medium">Data:</label><input type="date" id="filter-date" class="w-full p-1 border rounded"></div><div><label for="filter-status" class="block font-medium">Status:</label><select id="filter-status" class="w-full p-1 border rounded"><option value="todos">Todos</option><option value="Registrada">Registrada</option><option value="Em Análise">Em Análise</option><option value="Solucionada">Solucionada</option><option value="Sem Solução">Sem Solução</option></select></div></div><button id="print-button" class="w-full bg-gray-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-gray-700 transition mt-3 text-sm">Imprimir Relatório</button></div><div class="bg-slate-50 border rounded-lg p-4 mb-6"><h3 class="font-bold text-lg text-center mb-3">Placar</h3><div class="flex justify-around text-center"><div><p class="text-3xl font-bold" id="registered-count">0</p><p class="text-sm text-slate-500">Registradas</p></div><div><p class="text-3xl font-bold text-green-600" id="solved-count">0</p><p class="text-sm text-slate-500">Solucionadas</p></div></div></div><div id="complaints-list" class="space-y-3 max-h-96 overflow-y-auto pr-2"></div></div>
-    </div>
+    <!-- COLUNA 3: SORTEIO -->
+    <div class="bg-white p-6 rounded-xl shadow-lg"><h2 class="text-2xl font-bold text-center mb-4 border-b pb-3 text-indigo-600">Direto no Sorteio</h2><div id="sorteio-container" class="text-center p-4 border-2 border-dashed rounded-lg min-h-[150px] flex items-center justify-center"><div id="winner-display" class="hidden"></div><p id="sorteio-placeholder" class="text-slate-500">Aguardando...</p></div><button id="draw-button" class="w-full bg-indigo-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-indigo-700 mt-4 text-lg shadow-md" disabled>SORTEAR AGORA!</button><div class="mt-6"><h3 class="font-bold text-lg mb-2">Participantes (<span id="participant-count">0</span>)</h3><div class="bg-slate-50 p-3 rounded-lg max-h-60 overflow-y-auto border"><ul id="participants-list" class="space-y-2 text-sm"></ul></div></div></div>
+    <!-- COLUNA 4: RECLAMAÇÕES -->
+    <div class="bg-white p-6 rounded-xl shadow-lg"><h2 class="text-2xl font-bold text-center mb-4 border-b pb-3 text-red-600">Fala que Eu Registro</h2><div class="bg-slate-100 p-3 rounded-lg border mb-4"><h3 class="font-semibold text-sm mb-2 text-center">Gerar Relatório</h3><div class="grid grid-cols-2 gap-2 text-sm"><div><label for="filter-date" class="block font-medium">Data:</label><input type="date" id="filter-date" class="w-full p-1 border rounded"></div><div><label for="filter-status" class="block font-medium">Status:</label><select id="filter-status" class="w-full p-1 border rounded"><option value="todos">Todos</option><option value="Registrada">Registrada</option><option value="Em Análise">Em Análise</option><option value="Solucionada">Solucionada</option><option value="Sem Solução">Sem Solução</option></select></div></div><button id="print-button" class="w-full bg-gray-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-gray-700 transition mt-3 text-sm">Imprimir Relatório</button></div><div class="bg-slate-50 border rounded-lg p-4 mb-6"><h3 class="font-bold text-lg text-center mb-3">Placar</h3><div class="flex justify-around text-center"><div><p class="text-3xl font-bold" id="registered-count">0</p><p class="text-sm text-slate-500">Registradas</p></div><div><p class="text-3xl font-bold text-green-600" id="solved-count">0</p><p class="text-sm text-slate-500">Solucionadas</p></div></div></div><div id="complaints-list" class="space-y-3 max-h-96 overflow-y-auto pr-2"></div></div>
 </div></div>
 <script>
 document.addEventListener('DOMContentLoaded', () => {
     const API_URL = window.location.origin;
-    // ... (restante do JS)
     const messagesList = document.getElementById('messages-list');
     const drawButton = document.getElementById('draw-button');
     const participantsList = document.getElementById('participants-list');
@@ -397,8 +403,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const msg1 = document.getElementById('msg1');
     const msg2 = document.getElementById('msg2');
     const msg3 = document.getElementById('msg3');
-    const statsTotalCadastros = document.getElementById('stats-total-cadastros');
-    const statsDbSize = document.getElementById('stats-db-size');
+    const statsTotalCadastros = document.getElementById('stats-total-cadastros-header');
+    const statsDbSize = document.getElementById('stats-db-size-header');
     const searchMessagesBtn = document.getElementById('search-messages-btn');
     const resetMessagesBtn = document.getElementById('reset-messages-btn');
     const filterStartDate = document.getElementById('filter-start-date');
@@ -531,10 +537,7 @@ document.addEventListener('DOMContentLoaded', () => {
         solvedCountEl.textContent = reclamacoes.filter(r => r.status === 'Solucionada').length;
     }
 
-    function imprimirRelatorio() {
-        // ... (código inalterado)
-    }
-
+    function imprimirRelatorio() { /* ... (código inalterado) ... */ }
     async function promoverMensagem(id) {
         try {
             await fetch(`${API_URL}/promover_reclamacao`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id }) });
@@ -542,15 +545,12 @@ document.addEventListener('DOMContentLoaded', () => {
             fetchMessages();
         } catch (error) { console.error("Erro ao promover mensagem:", error); }
     }
-
     function addPromoteListeners() {
         document.querySelectorAll('.promote-btn').forEach(btn => {
             btn.addEventListener('click', (event) => { promoverMensagem(parseInt(event.target.dataset.id)); });
         });
     }
-
     function realizarSorteio() { /* ... (código inalterado) ... */ }
-    
     async function updateStatus(id, newStatus) {
         try {
             await fetch(`${API_URL}/reclamacoes/${id}/status`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: newStatus }) });
@@ -560,7 +560,6 @@ document.addEventListener('DOMContentLoaded', () => {
             atualizarPlacar(reclamacoesCache);
         } catch (error) { console.error("Erro ao atualizar status:", error); }
     }
-
     function addStatusChangeListeners() {
         document.querySelectorAll('.status-select').forEach(select => {
             select.addEventListener('change', (event) => {
@@ -604,7 +603,7 @@ document.addEventListener('DOMContentLoaded', () => {
     fetchStats();
     setInterval(fetchMainData, 20000);
     setInterval(fetchMessages, 20000);
-    setInterval(fetchStats, 60000); // 1 minuto
+    setInterval(fetchStats, 60000);
     setInterval(fetchDisparoStatus, 5000);
 });
 </script></body></html>
@@ -618,7 +617,7 @@ if __name__ == '__main__':
     with app.app_context():
         db.create_all()
     print("===================================================")
-    print("🚀 Servidor do Painel v7 (Modo Meta API + DB) iniciado!")
+    print("🚀 Servidor do Painel v8 (Modo Meta API + DB) iniciado!")
     print("Acesse o painel em: http://127.0.0.1:5000")
     print("===================================================")
     app.run(host='0.0.0.0', port=5000, debug=False)
