@@ -102,6 +102,27 @@ def adicionar_ao_sorteio(telefone, nome_extraido):
         return True
     return False
 
+def formatar_numero_br(numero):
+    """
+    Corrige números de celular do Brasil que podem vir da API sem o nono dígito.
+    Exemplo: 554498369564 (12 dígitos) -> 5544998369564 (13 dígitos)
+    """
+    if not isinstance(numero, str): return numero
+    
+    # A regra se aplica a números brasileiros (prefixo 55) com 12 dígitos.
+    # Formato antigo: 55 + DDD (2) + NÚMERO (8). Total 12.
+    # Formato novo:   55 + DDD (2) + 9 + NÚMERO (8). Total 13.
+    if numero.startswith('55') and len(numero) == 12:
+        ddd = int(numero[2:4])
+        # Confirma que o DDD é válido no Brasil (11-99)
+        if 11 <= ddd <= 99:
+            print(f"INFO: Corrigindo número brasileiro de 12 para 13 dígitos: {numero}")
+            numero_corrigido = f"{numero[:4]}9{numero[4:]}"
+            print(f"INFO: Número corrigido para {numero_corrigido}")
+            return numero_corrigido
+            
+    return numero
+
 def enviar_resposta_whatsapp(destinatario, mensagem):
     if not all([META_ACCESS_TOKEN, META_PHONE_NUMBER_ID]):
         disparo_status["log"].append(f"AVISO: Credenciais não configuradas. Simulando envio para {destinatario}")
@@ -236,7 +257,11 @@ def whatsapp_webhook():
         try:
             if 'entry' in data and data['entry'][0]['changes'][0]['value'].get('messages'):
                 message_data = data['entry'][0]['changes'][0]['value']['messages'][0]
-                remetente = message_data['from']
+                remetente_original = message_data['from']
+                
+                # Corrige o número do remetente para o formato brasileiro com 9º dígito
+                remetente = formatar_numero_br(remetente_original)
+                
                 message_type = message_data.get('type')
                 
                 mensagem_para_painel, nome_extraido, media_id = "", None, None
@@ -661,3 +686,4 @@ if __name__ == '__main__':
     print("Acesse o painel em: http://127.0.0.1:5000")
     print("===================================================")
     app.run(host='0.0.0.0', port=5000, debug=False)
+
